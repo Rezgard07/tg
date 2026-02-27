@@ -11,7 +11,7 @@ from pyaspeller import YandexSpeller
 
 # Данные бота
 TOKEN = "8354164344:AAGfLAdD6_tRY6wFc5_2gerCTZ9HIy-wBjU"
-OWNER = "@rezgard" # Твой юзернейм в телеге
+OWNER = "@rezgard" 
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
@@ -33,7 +33,8 @@ def get_main_kb():
     return builder.as_markup(resize_keyboard=True)
 
 # Веб-сервер для Render
-async def handle(request): return web.Response(text="Bot is Live")
+async def handle(request): 
+    return web.Response(text="Bot is Live")
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -68,7 +69,15 @@ async def show_stats(message: types.Message):
 
 @dp.message()
 async def handle_message(message: types.Message):
-    if not message.text or message.text.startswith("/"): return
+    # ПРОВЕРКА КНОПОК: чтобы бот не переводил текст самих кнопок
+    if message.text == "📊 Моя статистика":
+        return await show_stats(message)
+    if message.text == "🆘 Помощь / О боте":
+        return await show_help(message)
+    
+    # Если это не текст или команда — игнорим
+    if not message.text or message.text.startswith("/"): 
+        return
     
     # Обновление статистики
     conn = sqlite3.connect('stats.db')
@@ -79,19 +88,20 @@ async def handle_message(message: types.Message):
 
     text = message.text
     try:
-        # Проверка орфографии
+        # 1. Проверка орфографии
         corrected = speller.spelled(text)
         is_rus = any(c in "абвгдейёжзийклмнопрстуфхцчшщъыьэюя" for c in text.lower())
         
-        # Перевод
+        # 2. Перевод
         target_lang = 'en' if is_rus else 'ru'
         translated = GoogleTranslator(source='auto', target=target_lang).translate(text)
         
-        # Умная справка
-        if len(text.split()) == 1:
-            info = "💡 <b>Совет:</b> используйте это слово в контексте предложения для более точного перевода."
+        # 3. Динамическая справка (умная)
+        words = text.split()
+        if len(words) == 1:
+            info = f"💡 <b>Совет:</b> это одиночное слово. Его перевод: <i>{translated}</i>."
         else:
-            info = f"💡 <b>Факт:</b> перевод выполнен на {'английский' if is_rus else 'русский'} язык."
+            info = f"💡 <b>Факт:</b> предложение из {len(words)} слов успешно переведено."
 
         response = (
             f"🔍 <b>Статус:</b> {'✅ Ошибок нет' if text == corrected else '❌ Исправлено'}\n"
@@ -112,7 +122,9 @@ async def main():
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", 8080))).start()
+    
     # Запуск бота
+    logging.basicConfig(level=logging.INFO)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
