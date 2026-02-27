@@ -2,3 +2,4 @@ aiogram
 deep_translator
 aiohttp
 pyaspeller
+aiosqlite
