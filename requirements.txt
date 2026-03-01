@@ -1,5 +1,5 @@
 aiogram
-deep_translator
+yfinance
+matplotlib
+pandas
 aiohttp
-pyaspeller
-aiosqlite
