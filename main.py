@@ -1,129 +1,109 @@
 import logging
 import asyncio
 import os
-import sqlite3
+import io
+import yfinance as yf
+import matplotlib.pyplot as plt
+import pandas as pd
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.utils.keyboard import ReplyKeyboardBuilder
-from deep_translator import GoogleTranslator
 from aiohttp import web
-from pyaspeller import YandexSpeller
 
-# Данные бота
+# --- НАСТРОЙКИ ---
 TOKEN = "8354164344:AAGfLAdD6_tRY6wFc5_2gerCTZ9HIy-wBjU"
-OWNER = "@rezgard" 
-
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
-speller = YandexSpeller()
 
-# Инициализация БД
-def init_db():
-    conn = sqlite3.connect('stats.db')
-    conn.execute('CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, count INTEGER DEFAULT 0)')
-    conn.commit()
-    conn.close()
+# --- ЛОГИКА АКЦИЙ ---
+def get_stock_data(ticker):
+    stock = yf.Ticker(ticker)
+    hist = stock.history(period="1y")
+    if hist.empty:
+        return None
+    
+    current_price = hist['Close'].iloc[-1]
+    change_1m = ((current_price - hist['Close'].iloc[-21]) / hist['Close'].iloc[-21]) * 100 if len(hist) > 21 else 0
+    change_1y = ((current_price - hist['Close'].iloc[0]) / hist['Close'].iloc[0]) * 100
+    
+    # Простейший прогноз (SMA)
+    sma_20 = hist['Close'].rolling(window=20).mean().iloc[-1]
+    prob_up = 65 if current_price > sma_20 else 35
+    prob_down = 100 - prob_up
+    
+    return {
+        "price": round(current_price, 2),
+        "1m": round(change_1m, 1),
+        "1y": round(change_1y, 1),
+        "up": prob_up,
+        "down": prob_down,
+        "hist": hist
+    }
 
-# Клавиатура
-def get_main_kb():
-    builder = ReplyKeyboardBuilder()
-    builder.button(text="📊 Моя статистика")
-    builder.button(text="🆘 Помощь / О боте")
-    builder.adjust(2)
-    return builder.as_markup(resize_keyboard=True)
+def create_chart(hist, ticker):
+    plt.figure(figsize=(10, 5))
+    plt.plot(hist.index, hist['Close'], color='blue', linewidth=2)
+    plt.title(f"График {ticker} (1 год)")
+    plt.grid(True)
+    
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png')
+    buf.seek(0)
+    plt.close()
+    return buf
 
-# Веб-сервер для Render
-async def handle(request): 
-    return web.Response(text="Bot is Live")
-
+# --- КОМАНДЫ БОТА ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    init_db()
     await message.answer(
-        f"👋 <b>Дарова! Ты в главном меню.</b>\n\n"
-        f"Я исправляю ошибки и перевожу текст автоматически.\n"
-        f"Просто напиши мне что-нибудь!",
-        parse_mode="HTML",
-        reply_markup=get_main_kb()
+        "📈 <b>Бот-инвестор готов!</b>\n\n"
+        "Введи тикер акции (например: <code>AAPL</code> или <code>GAZP.ME</code>),\n"
+        "чтобы получить цену, график и прогноз.",
+        parse_mode="HTML"
     )
-
-@dp.message(F.text == "🆘 Помощь / О боте")
-async def show_help(message: types.Message):
-    help_text = (
-        f"🚀 <b>Функции бота:</b>\n"
-        f"1. <b>Авто-исправление:</b> проверяю ошибки в RU тексте.\n"
-        f"2. <b>Переводчик:</b> RU ↔ EN определяется сам.\n"
-        f"3. <b>Статистика:</b> считаю твои успехи.\n\n"
-        f"👨‍💻 <b>Создатель:</b> {OWNER}\n"
-        f"<i>Сделано специально для удобного обучения!</i>"
-    )
-    await message.answer(help_text, parse_mode="HTML")
-
-@dp.message(F.text == "📊 Моя статистика")
-async def show_stats(message: types.Message):
-    conn = sqlite3.connect('stats.db')
-    res = conn.execute('SELECT count FROM users WHERE id = ?', (message.from_user.id,)).fetchone()
-    count = res[0] if res else 0
-    conn.close()
-    await message.answer(f"📈 Ты успешно обработал сообщений: <b>{count}</b>", parse_mode="HTML")
 
 @dp.message()
-async def handle_message(message: types.Message):
-    # ПРОВЕРКА КНОПОК: чтобы бот не переводил текст самих кнопок
-    if message.text == "📊 Моя статистика":
-        return await show_stats(message)
-    if message.text == "🆘 Помощь / О боте":
-        return await show_help(message)
+async def handle_stock(message: types.Message):
+    ticker = message.text.upper().strip()
+    msg = await message.answer("🔄 Загружаю данные...")
     
-    # Если это не текст или команда — игнорим
-    if not message.text or message.text.startswith("/"): 
-        return
-    
-    # Обновление статистики
-    conn = sqlite3.connect('stats.db')
-    conn.execute('INSERT OR IGNORE INTO users (id, count) VALUES (?, 0)', (message.from_user.id,))
-    conn.execute('UPDATE users SET count = count + 1 WHERE id = ?', (message.from_user.id,))
-    conn.commit()
-    conn.close()
-
-    text = message.text
     try:
-        # 1. Проверка орфографии
-        corrected = speller.spelled(text)
-        is_rus = any(c in "абвгдейёжзийклмнопрстуфхцчшщъыьэюя" for c in text.lower())
+        data = get_stock_data(ticker)
+        if not data:
+            return await msg.edit_text("❌ Тикер не найден. Попробуй AAPL или MSFT.")
         
-        # 2. Перевод
-        target_lang = 'en' if is_rus else 'ru'
-        translated = GoogleTranslator(source='auto', target=target_lang).translate(text)
-        
-        # 3. Динамическая справка (умная)
-        words = text.split()
-        if len(words) == 1:
-            info = f"💡 <b>Совет:</b> это одиночное слово. Его перевод: <i>{translated}</i>."
-        else:
-            info = f"💡 <b>Факт:</b> предложение из {len(words)} слов успешно переведено."
-
-        response = (
-            f"🔍 <b>Статус:</b> {'✅ Ошибок нет' if text == corrected else '❌ Исправлено'}\n"
-            f"📝 <b>Правка:</b> <code>{corrected}</code>\n"
-            f"🌐 <b>Перевод:</b> <code>{translated}</code>\n\n"
-            f"{info}"
+        # Формируем текст
+        text = (
+            f"📊 <b>Акция: {ticker}</b>\n\n"
+            f"💰 Цена: <b>${data['price']}</b>\n"
+            f"📅 За месяц: <code>{data['1m']}%</code>\n"
+            f"📅 За год: <code>{data['1y']}%</code>\n\n"
+            f"🧠 <b>Прогноз (7 дней):</b>\n"
+            f"📈 Рост: {data['up']}%\n"
+            f"📉 Падение: {data['down']}%\n\n"
+            f"⚠️ <i>Не является финансовой рекомендацией!</i>"
         )
-        await message.answer(response, parse_mode="HTML")
+        
+        # Генерируем график
+        chart_buf = create_chart(data['hist'], ticker)
+        photo = types.BufferedInputFile(chart_buf.read(), filename="chart.png")
+        
+        await message.answer_photo(photo=photo, caption=text, parse_mode="HTML")
+        await msg.delete()
         
     except Exception as e:
         logging.error(f"Error: {e}")
+        await msg.edit_text("⚠️ Ошибка при получении данных.")
+
+# --- WEB SERVER ДЛЯ RENDER ---
+async def handle_web(request): return web.Response(text="Stock Bot is Live")
 
 async def main():
-    init_db()
-    # Запуск веб-сервера
     app = web.Application()
-    app.router.add_get("/", handle)
+    app.router.add_get("/", handle_web)
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", 8080))).start()
     
-    # Запуск бота
     logging.basicConfig(level=logging.INFO)
     await dp.start_polling(bot)
 
